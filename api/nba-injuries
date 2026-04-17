@@ -1,0 +1,37 @@
+// nba-injuries.js — Vercel serverless proxy
+// Fetches NBA injury data from ESPN's public API
+// Returns: { "Team Name": [{ player, position, status, comment }] }
+
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
+  try {
+    const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries');
+    if (!r.ok) return res.status(r.status).json({ error: 'ESPN API error' });
+    const data = await r.json();
+
+    const output = {};
+    for (const team of (data.injuries || [])) {
+      const teamName = team.displayName;
+      const players = [];
+      for (const inj of (team.injuries || [])) {
+        const status = inj.status || '';
+        if (!['Out', 'Day-To-Day', 'Questionable', 'Injured Reserve', 'IR', 'Game Time Decision'].includes(status)) continue;
+        const athlete = inj.athlete || {};
+        players.push({
+          player:   athlete.displayName || 'Unknown',
+          position: athlete.position?.abbreviation || '',
+          status,
+          comment:  inj.shortComment || inj.longComment || '',
+        });
+      }
+      if (players.length) output[teamName] = players;
+    }
+
+    res.status(200).json(output);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}

@@ -1,6 +1,11 @@
 {
   "rewrites": [
-    { "source": "/api/odds", "destination": "/api/odds" },
-    { "source": "/api/sports", "destination": "/api/sports" }
+    { "source": "/api/odds",          "destination": "/api/odds" },
+    { "source": "/api/sports",        "destination": "/api/sports" },
+    { "source": "/api/nhl-stats",     "destination": "/api/nhl-stats" },
+    { "source": "/api/nba-stats",     "destination": "/api/nba-stats" },
+    { "source": "/api/tennis-stats",  "destination": "/api/tennis-stats" },
+    { "source": "/api/nhl-injuries",  "destination": "/api/nhl-injuries" },
+    { "source": "/api/nba-injuries",  "destination": "/api/nba-injuries" }
   ]
 }

@@ -1,149 +1,103 @@
-// historical-odds.js
-// Returns opening line + closing line for a given game.
-//
-// Query params:
-//   sport      — e.g. "icehockey_nhl"
-//   homeTeam   — full team name
-//   awayTeam   — full team name
-//   gameDate   — ISO date string of game day (e.g. "2025-12-14T00:00:00Z")
-//   apiKey     — Odds API key (passed from frontend so user can rotate)
-//
-// Strategy:
-//   Opening line  = snapshot ~24 hours before game time
-//   Closing line  = snapshot ~20 minutes before game time
-//
-// Cost: 2 requests × 10 credits = 20 credits per game lookup
-// (h2h market, us region only)
-//
-// NOTE: Odds API stores snapshots every 10 minutes.
-// Timestamps must be rounded to nearest 10-minute boundary.
+// historical-odds.js — opening + closing line fetcher
+// GET /api/historical-odds?sport=icehockey_nhl&homeTeam=X&awayTeam=Y&gameDate=ISO&apiKey=KEY
 
-const APPROVED_BOOKS = ['draftkings','fanduel','betmgm','caesars','bet365','pinnacle'];
+const APPROVED = ['draftkings','fanduel','betmgm','caesars','williamhill_us','pinnacle'];
 
-// Round a Date to the nearest 10-minute snapshot boundary
-function roundTo10Min(date) {
-  const ms = date.getTime();
-  const tenMin = 10 * 60 * 1000;
-  return new Date(Math.floor(ms / tenMin) * tenMin);
-}
+function norm(s) { return (s||'').toLowerCase().trim().replace(/\s+/g,' '); }
 
-function normTeam(name) {
-  return (name || '').toLowerCase().trim()
-    .replace(/[éèê]/g, 'e')
-    .replace(/\s+/g, ' ');
-}
-
-function bestMatchGame(games, homeTeam, awayTeam) {
-  const nh = normTeam(homeTeam);
-  const na = normTeam(awayTeam);
+function findGame(games, home, away) {
+  const h = norm(home), a = norm(away);
   return games.find(g => {
-    const gh = normTeam(g.home_team);
-    const ga = normTeam(g.away_team);
-    return (gh.includes(nh) || nh.includes(gh)) &&
-           (ga.includes(na) || na.includes(ga));
+    const gh = norm(g.home_team), ga = norm(g.away_team);
+    return (gh.includes(h.split(' ').pop()) || h.includes(gh.split(' ').pop())) &&
+           (ga.includes(a.split(' ').pop()) || a.includes(ga.split(' ').pop()));
   }) || null;
 }
 
-function extractH2HOdds(game) {
-  let homeOddsSum = 0, awayOddsSum = 0, homeWt = 0, awayWt = 0;
-  for (const bm of (game.bookmakers || [])) {
-    if (!APPROVED_BOOKS.includes(bm.key.toLowerCase())) continue;
-    const h2h = (bm.markets || []).find(m => m.key === 'h2h');
-    if (!h2h) continue;
-    const wt = bm.key.toLowerCase() === 'pinnacle' ? 2.5 : 1;
-    for (const oc of (h2h.outcomes || [])) {
-      const isDec = oc.price > 1 && oc.price < 50;
-      const dec = isDec ? oc.price : (oc.price > 0 ? oc.price / 100 + 1 : 100 / Math.abs(oc.price) + 1);
-      if (normTeam(oc.name).includes(normTeam(game.home_team).split(' ').pop())) {
-        homeOddsSum += dec * wt; homeWt += wt;
-      } else {
-        awayOddsSum += dec * wt; awayWt += wt;
-      }
+function getOdds(game) {
+  let hSum=0, aSum=0, hW=0, aW=0;
+  const homeLast = norm(game.home_team).split(' ').pop();
+  for (const bm of (game.bookmakers||[])) {
+    const key = bm.key.toLowerCase();
+    if (!APPROVED.includes(key)) continue;
+    const mkt = (bm.markets||[]).find(m => m.key==='h2h');
+    if (!mkt) continue;
+    const w = key==='pinnacle' ? 2.5 : 1;
+    for (const oc of (mkt.outcomes||[])) {
+      const p = oc.price;
+      const dec = (p > 1 && p < 50) ? p : (p>0 ? p/100+1 : 100/Math.abs(p)+1);
+      if (norm(oc.name).includes(homeLast)) { hSum+=dec*w; hW+=w; }
+      else { aSum+=dec*w; aW+=w; }
     }
   }
   return {
-    homeOdds: homeWt > 0 ? +(homeOddsSum / homeWt).toFixed(3) : null,
-    awayOdds: awayWt > 0 ? +(awayOddsSum / awayWt).toFixed(3) : null,
+    homeOdds: hW>0 ? +(hSum/hW).toFixed(3) : null,
+    awayOdds: aW>0 ? +(aSum/aW).toFixed(3) : null,
   };
 }
 
-async function fetchSnapshot(sport, dateISO, apiKey) {
-  const url = `https://api.the-odds-api.com/v4/historical/sports/${sport}/odds` +
-    `?apiKey=${apiKey}&regions=us&markets=h2h&oddsFormat=decimal&date=${encodeURIComponent(dateISO)}`;
+async function snap(sport, iso, apiKey) {
+  const url = `https://api.the-odds-api.com/v4/historical/sports/${encodeURIComponent(sport)}/odds?apiKey=${apiKey}&regions=us&markets=h2h&oddsFormat=decimal&date=${encodeURIComponent(iso)}`;
   const r = await fetch(url);
-  if (!r.ok) {
-    const txt = await r.text().catch(() => '');
-    throw new Error(`Odds API ${r.status}: ${txt.slice(0, 200)}`);
-  }
-  return r.json();
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`OddsAPI ${r.status}: ${body.message||JSON.stringify(body).slice(0,120)}`);
+  return body;
 }
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const { sport, homeTeam, awayTeam, gameDate, apiKey } = req.query;
+  const { sport, homeTeam, awayTeam, gameDate, apiKey } = req.query || {};
+  if (!sport || !homeTeam || !awayTeam || !gameDate || !apiKey)
+    return res.status(400).json({ error: 'Missing params: sport, homeTeam, awayTeam, gameDate, apiKey' });
 
-  if (!sport || !homeTeam || !awayTeam || !gameDate || !apiKey) {
-    return res.status(400).json({ error: 'Missing required params: sport, homeTeam, awayTeam, gameDate, apiKey' });
-  }
+  const t = new Date(gameDate);
+  if (isNaN(t)) return res.status(400).json({ error: 'Invalid gameDate' });
+
+  // Opening = 24h before, Closing = 30min before
+  const openISO  = new Date(t - 24*60*60*1000).toISOString();
+  const closeISO = new Date(t -    30*60*1000).toISOString();
 
   try {
-    const gameTime = new Date(gameDate);
-    if (isNaN(gameTime.getTime())) {
-      return res.status(400).json({ error: 'Invalid gameDate — use ISO format e.g. 2025-12-14T20:00:00Z' });
-    }
-
-    // Opening line: 24 hours before game, rounded to 10-min snapshot
-    const openingTime = roundTo10Min(new Date(gameTime.getTime() - 24 * 60 * 60 * 1000)).toISOString();
-    // Closing line: 30 minutes before game, rounded to 10-min snapshot
-    const closingTime = roundTo10Min(new Date(gameTime.getTime() - 30 * 60 * 1000)).toISOString();
-
     const [openSnap, closeSnap] = await Promise.all([
-      fetchSnapshot(sport, openingTime, apiKey),
-      fetchSnapshot(sport, closingTime, apiKey),
+      snap(sport, openISO, apiKey),
+      snap(sport, closeISO, apiKey),
     ]);
 
-    const openGame  = bestMatchGame(openSnap.data  || [], homeTeam, awayTeam);
-    const closeGame = bestMatchGame(closeSnap.data || [], homeTeam, awayTeam);
+    const og = findGame(openSnap.data||[], homeTeam, awayTeam);
+    const cg = findGame(closeSnap.data||[], homeTeam, awayTeam);
 
-    if (!openGame && !closeGame) {
-      return res.status(404).json({
-        error: 'Game not found in historical snapshots',
-        openTimestamp: openSnap.timestamp,
-        closeTimestamp: closeSnap.timestamp,
-        openGamesFound: (openSnap.data || []).length,
-        closeGamesFound: (closeSnap.data || []).length,
-      });
-    }
+    if (!og && !cg) return res.status(404).json({
+      error: 'Game not found in snapshots',
+      openISO, closeISO,
+      openCount: (openSnap.data||[]).length,
+      closeCount: (closeSnap.data||[]).length,
+    });
 
-    const opening = openGame  ? extractH2HOdds(openGame)  : null;
-    const closing = closeGame ? extractH2HOdds(closeGame) : null;
+    const opening = og ? getOdds(og) : null;
+    const closing = cg ? getOdds(cg) : null;
 
-    let closingFairHome = null, closingFairAway = null;
+    let fairHome=null, fairAway=null;
     if (closing?.homeOdds && closing?.awayOdds) {
-      const rawH = 1 / closing.homeOdds;
-      const rawA = 1 / closing.awayOdds;
-      const vig  = rawH + rawA;
-      closingFairHome = +(rawH / vig).toFixed(4);
-      closingFairAway = +(rawA / vig).toFixed(4);
+      const rh=1/closing.homeOdds, ra=1/closing.awayOdds, v=rh+ra;
+      fairHome = +(rh/v).toFixed(4);
+      fairAway = +(ra/v).toFixed(4);
     }
 
     return res.status(200).json({
       sport,
-      homeTeam: openGame?.home_team || closeGame?.home_team || homeTeam,
-      awayTeam: openGame?.away_team || closeGame?.away_team || awayTeam,
-      openingTimestamp: openSnap.timestamp,
-      closingTimestamp: closeSnap.timestamp,
-      opening,
-      closing,
-      closingFairHome,
-      closingFairAway,
-      remainingRequests: closeSnap['x-requests-remaining'] ?? openSnap['x-requests-remaining'] ?? null,
+      homeTeam: og?.home_team || cg?.home_team || homeTeam,
+      awayTeam: og?.away_team || cg?.away_team || awayTeam,
+      openISO, closeISO,
+      opening, closing,
+      closingFairHome: fairHome,
+      closingFairAway: fairAway,
+      remaining: closeSnap['x-requests-remaining'] ?? openSnap['x-requests-remaining'] ?? null,
     });
 
-  } catch (e) {
+  } catch(e) {
     return res.status(500).json({ error: e.message });
   }
 }

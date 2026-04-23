@@ -10,12 +10,22 @@
 //
 // Strategy:
 //   Opening line  = snapshot ~24 hours before game time
-//   Closing line  = snapshot ~15 minutes before game time
+//   Closing line  = snapshot ~20 minutes before game time
 //
 // Cost: 2 requests × 10 credits = 20 credits per game lookup
 // (h2h market, us region only)
+//
+// NOTE: Odds API stores snapshots every 10 minutes.
+// Timestamps must be rounded to nearest 10-minute boundary.
 
 const APPROVED_BOOKS = ['draftkings','fanduel','betmgm','caesars','bet365','pinnacle'];
+
+// Round a Date to the nearest 10-minute snapshot boundary
+function roundTo10Min(date) {
+  const ms = date.getTime();
+  const tenMin = 10 * 60 * 1000;
+  return new Date(Math.floor(ms / tenMin) * tenMin);
+}
 
 function normTeam(name) {
   return (name || '').toLowerCase().trim()
@@ -35,7 +45,6 @@ function bestMatchGame(games, homeTeam, awayTeam) {
 }
 
 function extractH2HOdds(game) {
-  // Pull moneyline odds from approved books, Pinnacle 2.5× weighted
   let homeOddsSum = 0, awayOddsSum = 0, homeWt = 0, awayWt = 0;
   for (const bm of (game.bookmakers || [])) {
     if (!APPROVED_BOOKS.includes(bm.key.toLowerCase())) continue;
@@ -43,7 +52,7 @@ function extractH2HOdds(game) {
     if (!h2h) continue;
     const wt = bm.key.toLowerCase() === 'pinnacle' ? 2.5 : 1;
     for (const oc of (h2h.outcomes || [])) {
-      const isDec = oc.price > 1 && oc.price < 50; // decimal
+      const isDec = oc.price > 1 && oc.price < 50;
       const dec = isDec ? oc.price : (oc.price > 0 ? oc.price / 100 + 1 : 100 / Math.abs(oc.price) + 1);
       if (normTeam(oc.name).includes(normTeam(game.home_team).split(' ').pop())) {
         homeOddsSum += dec * wt; homeWt += wt;
@@ -61,10 +70,10 @@ function extractH2HOdds(game) {
 async function fetchSnapshot(sport, dateISO, apiKey) {
   const url = `https://api.the-odds-api.com/v4/historical/sports/${sport}/odds` +
     `?apiKey=${apiKey}&regions=us&markets=h2h&oddsFormat=decimal&date=${encodeURIComponent(dateISO)}`;
-  const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  const r = await fetch(url);
   if (!r.ok) {
     const txt = await r.text().catch(() => '');
-    throw new Error(`Odds API ${r.status}: ${txt.slice(0, 120)}`);
+    throw new Error(`Odds API ${r.status}: ${txt.slice(0, 200)}`);
   }
   return r.json();
 }
@@ -86,10 +95,10 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Invalid gameDate — use ISO format e.g. 2025-12-14T20:00:00Z' });
     }
 
-    // Opening line: 24 hours before game
-    const openingTime = new Date(gameTime.getTime() - 24 * 60 * 60 * 1000).toISOString();
-    // Closing line: 20 minutes before game
-    const closingTime = new Date(gameTime.getTime() - 20 * 60 * 1000).toISOString();
+    // Opening line: 24 hours before game, rounded to 10-min snapshot
+    const openingTime = roundTo10Min(new Date(gameTime.getTime() - 24 * 60 * 60 * 1000)).toISOString();
+    // Closing line: 30 minutes before game, rounded to 10-min snapshot
+    const closingTime = roundTo10Min(new Date(gameTime.getTime() - 30 * 60 * 1000)).toISOString();
 
     const [openSnap, closeSnap] = await Promise.all([
       fetchSnapshot(sport, openingTime, apiKey),
@@ -104,13 +113,14 @@ export default async function handler(req, res) {
         error: 'Game not found in historical snapshots',
         openTimestamp: openSnap.timestamp,
         closeTimestamp: closeSnap.timestamp,
+        openGamesFound: (openSnap.data || []).length,
+        closeGamesFound: (closeSnap.data || []).length,
       });
     }
 
     const opening = openGame  ? extractH2HOdds(openGame)  : null;
     const closing = closeGame ? extractH2HOdds(closeGame) : null;
 
-    // Fair probability from closing line (vig-removed)
     let closingFairHome = null, closingFairAway = null;
     if (closing?.homeOdds && closing?.awayOdds) {
       const rawH = 1 / closing.homeOdds;
@@ -121,14 +131,16 @@ export default async function handler(req, res) {
     }
 
     return res.status(200).json({
-      sport, homeTeam: openGame?.home_team || homeTeam, awayTeam: openGame?.away_team || awayTeam,
-      openingTimestamp:  openSnap.timestamp,
-      closingTimestamp:  closeSnap.timestamp,
+      sport,
+      homeTeam: openGame?.home_team || closeGame?.home_team || homeTeam,
+      awayTeam: openGame?.away_team || closeGame?.away_team || awayTeam,
+      openingTimestamp: openSnap.timestamp,
+      closingTimestamp: closeSnap.timestamp,
       opening,
       closing,
       closingFairHome,
       closingFairAway,
-      remainingRequests: closeSnap['x-requests-remaining'] ?? null,
+      remainingRequests: closeSnap['x-requests-remaining'] ?? openSnap['x-requests-remaining'] ?? null,
     });
 
   } catch (e) {

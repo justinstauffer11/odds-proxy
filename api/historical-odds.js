@@ -56,9 +56,9 @@ export default async function handler(req, res) {
   const t = new Date(gameDate);
   if (isNaN(t)) return res.status(400).json({ error: 'Invalid gameDate' });
 
-  // Opening = 24h before, Closing = 30min before
+  // Opening = 24h before, Closing = 2h before (avoids dead zone near game time)
   const openISO  = new Date(t - 24*60*60*1000).toISOString();
-  const closeISO = new Date(t -    30*60*1000).toISOString();
+  const closeISO = new Date(t -  2*60*60*1000).toISOString();
 
   try {
     const [openSnap, closeSnap] = await Promise.all([

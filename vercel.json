@@ -1,13 +1,14 @@
 {
   "rewrites": [
-    { "source": "/api/odds",          "destination": "/api/odds" },
-    { "source": "/api/sports",        "destination": "/api/sports" },
-    { "source": "/api/nhl-stats",     "destination": "/api/nhl-stats" },
-    { "source": "/api/nba-stats",     "destination": "/api/nba-stats" },
-    { "source": "/api/mlb-stats",     "destination": "/api/mlb-stats" },
-    { "source": "/api/nhl-injuries",  "destination": "/api/nhl-injuries" },
-    { "source": "/api/nba-injuries",  "destination": "/api/nba-injuries" },
-    { "source": "/api/nhl-players",   "destination": "/api/nhl-players" },
-    { "source": "/api/nba-props",      "destination": "/api/nba-props" }
+    { "source": "/api/odds",             "destination": "/api/odds" },
+    { "source": "/api/sports",           "destination": "/api/sports" },
+    { "source": "/api/nhl-stats",        "destination": "/api/nhl-stats" },
+    { "source": "/api/nba-stats",        "destination": "/api/nba-stats" },
+    { "source": "/api/mlb-stats",        "destination": "/api/mlb-stats" },
+    { "source": "/api/nhl-injuries",     "destination": "/api/nhl-injuries" },
+    { "source": "/api/nba-injuries",     "destination": "/api/nba-injuries" },
+    { "source": "/api/nhl-players",      "destination": "/api/nhl-players" },
+    { "source": "/api/nba-props",        "destination": "/api/nba-props" },
+    { "source": "/api/historical-odds",  "destination": "/api/historical-odds" }
   ]
 }

@@ -56,9 +56,11 @@ export default async function handler(req, res) {
   const t = new Date(gameDate);
   if (isNaN(t)) return res.status(400).json({ error: 'Invalid gameDate' });
 
-  // Opening = 24h before, Closing = 2h before (avoids dead zone near game time)
-  const openISO  = new Date(t - 24*60*60*1000).toISOString();
-  const closeISO = new Date(t -  2*60*60*1000).toISOString();
+// Opening = 24h before, Closing = 2h before (avoids dead zone near game time)
+// Strip milliseconds — Odds API rejects timestamps with .000Z
+const toISO = d => new Date(d).toISOString().replace(/\.\d{3}Z$/, 'Z');
+const openISO  = toISO(t - 24*60*60*1000);
+const closeISO = toISO(t -  2*60*60*1000);
 
   try {
     const [openSnap, closeSnap] = await Promise.all([

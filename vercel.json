@@ -9,6 +9,7 @@
     { "source": "/api/nba-injuries",     "destination": "/api/nba-injuries" },
     { "source": "/api/nhl-players",      "destination": "/api/nhl-players" },
     { "source": "/api/nba-props",        "destination": "/api/nba-props" },
-    { "source": "/api/historical-odds",  "destination": "/api/historical-odds" }
+    { "source": "/api/historical-odds",  "destination": "/api/historical-odds" },
+    { "source": "/api/nhl-schedule",      "destination": "/api/nhl-schedule" }
   ]
 }

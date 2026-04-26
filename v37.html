@@ -211,6 +211,113 @@ body {
   cursor: default;
 }
 
+/* v8: CLV dashboard */
+.clv-dash {
+  background: linear-gradient(135deg, rgba(59,130,246,0.05), rgba(34,197,94,0.05));
+  border: 1px solid rgba(59,130,246,0.18);
+  border-radius: 12px;
+  padding: 0.95rem 1.1rem;
+  margin-bottom: 0.85rem;
+}
+.clv-dash-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.6rem; flex-wrap: wrap;
+  margin-bottom: 0.7rem;
+}
+.clv-dash-title {
+  font-size: 0.74rem; font-weight: 700;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--blue);
+  display: flex; align-items: center; gap: 0.4rem;
+}
+.clv-dash-explain {
+  font-size: 0.7rem; color: var(--text-muted); font-weight: 400;
+  letter-spacing: 0; text-transform: none;
+}
+.clv-dash-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+.clv-dash-tile {
+  background: rgba(255,255,255,0.03);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+}
+.clv-dash-tile-label {
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.25rem;
+}
+.clv-dash-tile-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+.clv-dash-tile-sub {
+  font-size: 0.65rem;
+  color: var(--text-faint);
+  margin-top: 0.2rem;
+}
+.clv-dash-section-title {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0.65rem 0 0.4rem;
+}
+.clv-breakdown-row {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.35rem 0;
+  font-size: 0.74rem;
+}
+.clv-breakdown-key {
+  flex: 0 0 auto; min-width: 100px;
+  color: var(--text);
+  font-weight: 500;
+}
+.clv-breakdown-bar {
+  flex: 1; height: 6px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+}
+.clv-breakdown-bar-fill {
+  position: absolute;
+  top: 0; bottom: 0;
+  left: 50%;
+  transition: width var(--transition);
+}
+.clv-breakdown-bar-fill.pos { background: var(--green); transform: translateX(0); }
+.clv-breakdown-bar-fill.neg { background: var(--red); }
+.clv-breakdown-num {
+  flex: 0 0 90px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.74rem;
+  text-align: right;
+}
+.clv-trend {
+  display: flex; align-items: flex-end; gap: 2px;
+  height: 24px;
+}
+.clv-trend-bar {
+  flex: 1; min-width: 4px;
+  border-radius: 2px;
+  transition: opacity var(--transition);
+  cursor: help;
+}
+.clv-trend-bar.pos { background: var(--green); }
+.clv-trend-bar.neg { background: var(--red); }
+@media (max-width: 560px) {
+  .clv-dash-grid { grid-template-columns: 1fr 1fr; }
+  .clv-breakdown-key { min-width: 70px; font-size: 0.72rem; }
+  .clv-breakdown-num { flex-basis: 76px; font-size: 0.7rem; }
+}
+
 .key-status {
   font-size: 0.78rem; padding: 0.45rem 0.75rem; border-radius: var(--radius-sm);
   display: none; margin-bottom: 0.75rem;
@@ -1400,6 +1507,8 @@ body {
     </div>
     <div id="algo-rating-wrap"></div>
     <div id="tracker-pl-banner" style="display:none;background:linear-gradient(135deg,rgba(34,197,94,0.08),rgba(59,130,246,0.08));border:1px solid rgba(34,197,94,0.2);border-radius:10px;padding:0.75rem 1rem;margin-bottom:0.75rem;font-size:0.82rem;color:var(--text)"></div>
+    <!-- v8: CLV dashboard — renders empty until you have ≥3 bets with closing data -->
+    <div id="clv-dashboard" style="display:none"></div>
     <div class="stats-grid" id="tracker-stats" style="grid-template-columns:repeat(6,1fr)"></div>
     <div id="bets-list"></div>
   </div>
@@ -3629,14 +3738,17 @@ async function autoFetchClosingOdds() {
   if (!apiKey) return;
 
   const now = Date.now();
-  const oneDayMs = 24 * 60 * 60 * 1000;
-  // Find bets: no closing odds, has a commenceTime that has already passed
-  const targets = savedBets.filter(b =>
-    !b.closingOdds &&
-    b.commenceTime &&
-    new Date(b.commenceTime).getTime() < now - 60 * 60 * 1000 && // game started 1h+ ago
-    b.sport && CLV_SPORT_KEYS[b.sport]
-  );
+  // v8: Two cases qualify for auto-fetch:
+  //   1) EV bets with no closing odds yet
+  //   2) Model-winner picks with no closingFairProb yet
+  // Both need a past commenceTime and a supported sport.
+  const targets = savedBets.filter(b => {
+    if (!b.commenceTime || !b.sport || !CLV_SPORT_KEYS[b.sport]) return false;
+    if (new Date(b.commenceTime).getTime() >= now - 60 * 60 * 1000) return false; // game must have started 1h+ ago
+    const isModelPick = (b.pickType || 'ev') === 'model-winner';
+    if (isModelPick) return b.closingFairProb == null;
+    return !b.closingOdds;
+  });
 
   if (!targets.length) return;
 
@@ -3655,24 +3767,40 @@ async function autoFetchClosingOdds() {
       const data = await r.json();
 
       if (data.closing?.homeOdds && data.closing?.awayOdds) {
-        // Determine which side the bet was on
-        const selLower = (bet.selection || '').toLowerCase();
+        const selLower  = (bet.selection || '').toLowerCase();
         const homeLower = (bet.homeTeam || '').toLowerCase();
         const isHomeSide = selLower.includes(homeLower.split(' ').pop()) ||
                            homeLower.includes(selLower.split(' ').pop());
-        const closingOdds = isHomeSide ? data.closing.homeOdds : data.closing.awayOdds;
-        if (closingOdds > 1) {
-          bet.closingOdds = closingOdds;
-          bet.autoClv = true; // flag that this was fetched automatically
-          updated++;
+
+        const closingOdds     = isHomeSide ? data.closing.homeOdds      : data.closing.awayOdds;
+        const closingFairProb = isHomeSide ? data.closingFairHome       : data.closingFairAway;
+        const isModelPick     = (bet.pickType || 'ev') === 'model-winner';
+
+        let didUpdate = false;
+        if (isModelPick) {
+          // Model-winner picks only need closingFairProb (no odds attached)
+          if (closingFairProb != null) {
+            bet.closingFairProb = closingFairProb;
+            bet.autoClv = true;
+            didUpdate = true;
+          }
+        } else {
+          // EV bets need closingOdds (and optionally closingFairProb for cleaner CLV later)
+          if (closingOdds > 1) {
+            bet.closingOdds = closingOdds;
+            if (closingFairProb != null) bet.closingFairProb = closingFairProb;
+            bet.autoClv = true;
+            didUpdate = true;
+          }
         }
+        if (didUpdate) updated++;
       }
     } catch (_) { /* skip this bet, try next */ }
   }
 
   if (updated > 0) {
     persistBets();
-    renderTracker();
+    if (typeof renderTracker === 'function') renderTracker();
     console.log(`[Auto-CLV] Updated ${updated} bet(s) with closing odds`);
   }
 }
@@ -6373,6 +6501,215 @@ async function autoResolvePicks() {
 // ========== CLV TRACKER v2 ==========
 const BETS_LS_KEY = 'ef_bets';
 
+// ─── v8: UNIFIED CLV COMPUTATION ────────────────────────────────────────────
+// Computes Closing Line Value for any tracked pick — EV bets and model-winner
+// picks alike. Returns null when CLV can't be computed yet.
+//
+// For EV bets (have odds): standard formula
+//   CLV% = (yourOdds / closingOdds - 1) * 100
+//   Positive = you got better odds than where the line closed (sharp pick)
+//
+// For model-winner picks (no odds): use prob movement vs the model's fair prob
+//   CLV% = (closingFairProb - modelFairProb) * 100   (if model picked side that
+//          got bet harder by the market by closing time, that's positive CLV)
+//
+// Also returns a "type" label for UI badging.
+function computeBetCLV(bet) {
+  if (bet.odds && bet.closingOdds && bet.closingOdds > 1) {
+    return {
+      pct: (bet.odds / bet.closingOdds - 1) * 100,
+      method: 'odds',
+    };
+  }
+  // Model-winner pick path: rely on fair prob movement
+  if (bet.pickType === 'model-winner' && bet.fairProb != null && bet.closingFairProb != null) {
+    // bet.fairProb is stored as percent (0-100), closingFairProb as decimal (0-1)
+    const modelProb   = bet.fairProb / 100;
+    const closingProb = bet.closingFairProb;
+    return {
+      pct: (closingProb - modelProb) * 100,  // positive = market agreed with the model
+      method: 'prob',
+    };
+  }
+  return null;
+}
+
+// Slice CLV data by a key extractor — used for breakdowns (sport, tier, etc.)
+function sliceCLVStats(bets, keyFn) {
+  const buckets = new Map();
+  for (const bet of bets) {
+    const clv = computeBetCLV(bet);
+    if (clv == null) continue;
+    const key = keyFn(bet);
+    if (key == null) continue;
+    if (!buckets.has(key)) buckets.set(key, { count: 0, sum: 0, beat: 0 });
+    const b = buckets.get(key);
+    b.count++;
+    b.sum += clv.pct;
+    if (clv.pct > 0) b.beat++;
+  }
+  // Convert to result rows
+  const result = [];
+  for (const [key, b] of buckets.entries()) {
+    if (b.count === 0) continue;
+    result.push({
+      key,
+      count: b.count,
+      avgCLV: b.sum / b.count,
+      beatPct: (b.beat / b.count) * 100,
+    });
+  }
+  return result;
+}
+
+// ─── v8: CLV DASHBOARD RENDERER ────────────────────────────────────────────
+// Top-of-tracker summary that shows whether the model has real edge.
+// Renders: overall avg CLV, win-CLV %, last-10 trend, breakdown by sport
+// and confidence tier. Shows nothing if there's <3 bets with closing data.
+function renderCLVDashboard() {
+  const dash = document.getElementById('clv-dashboard');
+  if (!dash) return;
+
+  // Bets with computable CLV (covers both EV bets via odds and model picks via prob)
+  const clvable = savedBets.filter(b => computeBetCLV(b) != null);
+
+  if (clvable.length < 3) {
+    // Too few bets to draw any signal — show a placeholder when there's at
+    // least 1 bet, otherwise hide entirely.
+    if (clvable.length > 0) {
+      dash.style.display = 'block';
+      dash.innerHTML = `
+        <div class="clv-dash">
+          <div class="clv-dash-header">
+            <div class="clv-dash-title">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>
+              CLV Dashboard
+              <span class="clv-dash-explain">— ${3 - clvable.length} more bets needed</span>
+            </div>
+          </div>
+          <div style="font-size:0.78rem;color:var(--text-muted);line-height:1.5">
+            CLV (Closing Line Value) tells you if you're consistently beating the closing line.
+            Once 3+ of your tracked bets have closing data, this dashboard will show your edge metrics.
+          </div>
+        </div>`;
+    } else {
+      dash.style.display = 'none';
+    }
+    return;
+  }
+
+  // ── Overall stats ──
+  const total      = clvable.length;
+  const sumCLV     = clvable.reduce((s, b) => s + computeBetCLV(b).pct, 0);
+  const avgCLV     = sumCLV / total;
+  const beatCount  = clvable.filter(b => computeBetCLV(b).pct > 0).length;
+  const beatPct    = (beatCount / total) * 100;
+
+  // Last 10 bets (chronological, oldest→newest for trend visualization)
+  const sortedByDate = [...clvable].sort((a, b) => {
+    const ta = new Date(a.commenceTime || a.date || 0).getTime();
+    const tb = new Date(b.commenceTime || b.date || 0).getTime();
+    return ta - tb;
+  });
+  const last10 = sortedByDate.slice(-10);
+  const last10Sum = last10.reduce((s, b) => s + computeBetCLV(b).pct, 0);
+  const last10Avg = last10.length > 0 ? last10Sum / last10.length : 0;
+
+  // ── Breakdowns ──
+  const sportBreakdown = sliceCLVStats(clvable, b => b.sport);
+  const tierBreakdown  = sliceCLVStats(clvable, b => {
+    const c = b.confidence;
+    if (c == null) return null;
+    if (c >= 75) return 'Strong (75+)';
+    if (c >= 60) return 'Confirm (60-74)';
+    if (c >= 45) return 'Moderate (45-59)';
+    return 'Low (<45)';
+  });
+  const typeBreakdown = sliceCLVStats(clvable, b => {
+    return (b.pickType || 'ev') === 'model-winner' ? 'Model winner picks' : '+EV bets';
+  });
+
+  // ── Verdict ──
+  // Established research: pros at +1% to +3% avg CLV. +0% to +0.5% means
+  // the bettor is at fair value. Negative is bad — losing edge to the market.
+  let verdict, verdictColor;
+  if (avgCLV >= 2.0)        { verdict = 'Strong edge — pro territory';        verdictColor = 'var(--green)'; }
+  else if (avgCLV >= 0.75)  { verdict = 'Real edge — model is finding value'; verdictColor = 'var(--green)'; }
+  else if (avgCLV >= 0)     { verdict = 'At fair value — neutral CLV';        verdictColor = 'var(--yellow)'; }
+  else if (avgCLV >= -1)    { verdict = 'Slight negative — watch closely';    verdictColor = 'var(--yellow)'; }
+  else                       { verdict = 'Negative edge — losing to market';   verdictColor = 'var(--red)'; }
+
+  // ── Render ──
+  const fmt = (n) => (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+  const breakdownHTML = (title, rows) => {
+    if (rows.length === 0) return '';
+    rows.sort((a, b) => b.avgCLV - a.avgCLV); // best first
+    return `
+      <div class="clv-dash-section-title">${title}</div>
+      ${rows.map(r => {
+        const isPos = r.avgCLV >= 0;
+        const cls   = isPos ? 'pos' : 'neg';
+        // Bar fills from center: positive goes right, negative goes left
+        const barWidth = Math.min(50, Math.abs(r.avgCLV) * 8); // 50% width = ±6.25% CLV
+        const barStyle = isPos
+          ? `width:${barWidth}%;left:50%`
+          : `width:${barWidth}%;left:${50 - barWidth}%`;
+        return `<div class="clv-breakdown-row">
+          <div class="clv-breakdown-key">${escapeHtml(r.key)}</div>
+          <div class="clv-breakdown-bar"><div class="clv-breakdown-bar-fill ${cls}" style="${barStyle}"></div></div>
+          <div class="clv-breakdown-num"><span class="${isPos ? 'clv-pos' : 'clv-neg'}">${fmt(r.avgCLV)}</span> <span style="color:var(--text-faint)">(${r.count})</span></div>
+        </div>`;
+      }).join('')}`;
+  };
+
+  // Trend: last 10 individual CLV values as a small bar chart
+  const trendHTML = last10.length > 0 ? `
+    <div class="clv-dash-section-title">Last ${last10.length} bet${last10.length !== 1 ? 's' : ''} — trend</div>
+    <div class="clv-trend">
+      ${last10.map(b => {
+        const v = computeBetCLV(b).pct;
+        const isPos = v >= 0;
+        const heightPct = Math.min(100, Math.max(8, Math.abs(v) * 12));
+        return `<div class="clv-trend-bar ${isPos ? 'pos' : 'neg'}" style="height:${heightPct}%;opacity:${0.4 + Math.min(0.6, Math.abs(v)/8)}" title="${escapeHtml(b.match || '')}: ${fmt(v)}"></div>`;
+      }).join('')}
+    </div>` : '';
+
+  dash.style.display = 'block';
+  dash.innerHTML = `
+    <div class="clv-dash">
+      <div class="clv-dash-header">
+        <div class="clv-dash-title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>
+          CLV Dashboard
+          <span class="clv-dash-explain">— ${total} bet${total !== 1 ? 's' : ''} with closing data</span>
+        </div>
+      </div>
+
+      <div class="clv-dash-grid">
+        <div class="clv-dash-tile">
+          <div class="clv-dash-tile-label">Avg CLV</div>
+          <div class="clv-dash-tile-value" style="color:${verdictColor}">${fmt(avgCLV)}</div>
+          <div class="clv-dash-tile-sub" style="color:${verdictColor}">${verdict}</div>
+        </div>
+        <div class="clv-dash-tile">
+          <div class="clv-dash-tile-label">Beat closing</div>
+          <div class="clv-dash-tile-value" style="color:${beatPct >= 55 ? 'var(--green)' : beatPct >= 45 ? 'var(--text)' : 'var(--red)'}">${beatPct.toFixed(0)}%</div>
+          <div class="clv-dash-tile-sub">${beatCount} of ${total} bets</div>
+        </div>
+        <div class="clv-dash-tile">
+          <div class="clv-dash-tile-label">Last ${last10.length} avg</div>
+          <div class="clv-dash-tile-value" style="color:${last10Avg >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt(last10Avg)}</div>
+          <div class="clv-dash-tile-sub">${last10Avg >= avgCLV ? 'Improving' : 'Cooling off'}</div>
+        </div>
+      </div>
+
+      ${trendHTML}
+      ${breakdownHTML('By sport',         sportBreakdown)}
+      ${breakdownHTML('By confidence tier', tierBreakdown)}
+      ${typeBreakdown.length > 1 ? breakdownHTML('By pick type', typeBreakdown) : ''}
+    </div>`;
+}
+
 // ─── Algorithm Rating (1–10) ────────────────────────────────────────────────
 // Scoring formula (settled bets only, min 5 needed for full weight):
 //   Win Rate vs Expected Win Rate  40%  (are we beating our own predictions?)
@@ -6509,6 +6846,9 @@ function renderTracker() {
   // ── Algorithm rating ──
   renderAlgoRating(bets);
 
+  // v8: CLV dashboard renders independent of filter (uses all bets)
+  renderCLVDashboard();
+
   // ── Summary stat cards ──
   const settled = bets.filter(b => b.result === 'won' || b.result === 'lost');
   const won     = bets.filter(b => b.result === 'won');
@@ -6594,11 +6934,14 @@ function renderTracker() {
     const resultClass = bet.result === 'won' ? 'clv-badge clv-badge-won' : bet.result === 'lost' ? 'clv-badge clv-badge-lost' : 'clv-badge clv-badge-pending';
     const resultLabel = bet.result === 'won' ? 'Won ✓' : bet.result === 'lost' ? 'Lost ✗' : 'Pending';
 
+    // v8: unified CLV (works for both EV bets and model-winner picks)
     let clvHTML = '<span style="color:var(--text-muted);font-size:0.7rem">—</span>';
-    if (bet.closingOdds && bet.odds && bet.closingOdds > 1) {
-      const clv = (bet.odds / bet.closingOdds - 1) * 100;
+    const clvObj = computeBetCLV(bet);
+    if (clvObj) {
+      const clv = clvObj.pct;
       const autoBadge = bet.autoClv ? `<span style="margin-left:0.3rem;font-size:0.55rem;padding:0.05rem 0.25rem;background:rgba(59,130,246,0.15);color:var(--blue);border-radius:3px;border:1px solid rgba(59,130,246,0.3)">AUTO</span>` : '';
-      clvHTML = `<div style="white-space:nowrap"><span class="${clv >= 0 ? 'clv-pos' : 'clv-neg'}" style="font-family:'JetBrains Mono',monospace;font-size:0.75rem">${clv >= 0 ? '+' : ''}${clv.toFixed(1)}%</span>${autoBadge}</div>`;
+      const methodBadge = clvObj.method === 'prob' ? `<span style="margin-left:0.3rem;font-size:0.55rem;padding:0.05rem 0.25rem;background:rgba(167,139,250,0.15);color:#a78bfa;border-radius:3px;border:1px solid rgba(167,139,250,0.3)" title="Computed from probability movement (model-winner pick has no odds)">PROB</span>` : '';
+      clvHTML = `<div style="white-space:nowrap"><span class="${clv >= 0 ? 'clv-pos' : 'clv-neg'}" style="font-family:'JetBrains Mono',monospace;font-size:0.75rem">${clv >= 0 ? '+' : ''}${clv.toFixed(1)}%</span>${autoBadge}${methodBadge}</div>`;
     }
 
     const sportIcon = bet.sport === 'hockey' ? '🏒' : bet.sport === 'basketball' ? '🏀' : bet.sport === 'baseball' ? '⚾' : '🎾'; // legacy fallback
@@ -6903,6 +7246,15 @@ loadSavedBets();
 loadAnalyzedPicks();
 loadSavedKey();
 refreshHome();
+
+// v8: kick off background CLV fetch a couple seconds after startup so closing
+// odds for any past bets are populated before the user navigates to Tracker.
+// Silent — failures don't block the rest of the app.
+setTimeout(() => {
+  if (typeof autoFetchClosingOdds === 'function') {
+    autoFetchClosingOdds().catch(() => {});
+  }
+}, 2500);
 
 // Settings key input: Enter saves
 document.getElementById('settings-key-input').addEventListener('keydown', e => {

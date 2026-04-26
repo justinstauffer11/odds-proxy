@@ -50,7 +50,13 @@
       --transition: 140ms cubic-bezier(0.16,1,0.3,1);
     }
 
-    html { -webkit-font-smoothing: antialiased; scroll-behavior: smooth; }
+    html {
+      -webkit-font-smoothing: antialiased;
+      scroll-behavior: smooth;
+      /* v8: prevent any horizontal scroll on the page itself */
+      overflow-x: hidden;
+      width: 100%;
+    }
     body {
       font-family: 'Inter', system-ui, sans-serif;
       background: var(--bg);
@@ -58,17 +64,29 @@
       min-height: 100dvh;
       font-size: 14px;
       line-height: 1.6;
+      /* v8: hard guarantee — no horizontal swipe ever */
+      overflow-x: hidden;
+      width: 100%;
+      max-width: 100vw;
     }
+    /* v8: belt-and-suspenders — clamp every direct main wrapper so a runaway
+       wide child can't push the page wider than the viewport */
+    .main, .page { max-width: 100%; overflow-x: hidden; }
 
     /* ---- HEADER ---- */
     .header {
       position: sticky; top: 0; z-index: 100;
       background: #0d1015;
       border-bottom: 1px solid var(--border-subtle);
-      padding: 0 1.5rem;
-      height: 52px;
+      /* v8: respect iOS notch / status bar / Dynamic Island.
+         env() returns 0 on devices without notches so non-iOS users see no change. */
+      padding: env(safe-area-inset-top) calc(1.5rem + env(safe-area-inset-right)) 0 calc(1.5rem + env(safe-area-inset-left));
+      height: calc(52px + env(safe-area-inset-top));
       display: flex; align-items: center; justify-content: space-between; gap: 1rem;
       pointer-events: auto;
+      /* v8: prevent the header itself from being a horizontal-scroll source */
+      max-width: 100%;
+      overflow: hidden;
     }
     .logo {
       display: flex; align-items: center; gap: 9px;
@@ -94,7 +112,16 @@
     .nav-btn.active { color: var(--green); background: var(--green-dim); }
 
     /* ---- LAYOUT ---- */
-    .main { max-width: 820px; margin: 0 auto; padding: 1.75rem 1.25rem 5rem; }
+    .main {
+      max-width: 820px;
+      margin: 0 auto;
+      /* v8: respect iOS home indicator at bottom + side notches in landscape */
+      padding:
+        1.75rem
+        calc(1.25rem + env(safe-area-inset-right))
+        calc(5rem + env(safe-area-inset-bottom))
+        calc(1.25rem + env(safe-area-inset-left));
+    }
     .page { display: none; }
     .page.active { display: block; }
 
@@ -238,6 +265,10 @@
       border-radius: var(--radius-sm);
       border: 1px solid var(--border);
       background: var(--surface2);
+      /* v8: long content (team names, ensemble box) wraps inside the block */
+      max-width: 100%;
+      overflow-wrap: break-word;
+      word-break: break-word;
     }
     .rec-block.strong {
       background: rgba(34,197,94,0.06);
@@ -267,6 +298,9 @@
     .rec-action {
       font-size: 0.9rem; font-weight: 700; letter-spacing: -0.01em;
       line-height: 1.3; margin-bottom: 0.35rem;
+      /* v8: prevent long team names + percentages from forcing horizontal scroll */
+      overflow-wrap: break-word;
+      word-break: normal;
     }
     .rec-action.strong { color: var(--green); }
     .rec-action.confirm { color: var(--blue); }
@@ -339,6 +373,8 @@
       display: flex; flex-wrap: wrap; gap: 0.4rem;
       padding: 0 1.1rem;
       margin-bottom: 0.5rem;
+      /* v8: never let chip strip cause horizontal overflow */
+      max-width: 100%;
     }
     .info-chip {
       display: inline-flex; align-items: center; gap: 0.3rem;
@@ -349,6 +385,11 @@
       border: 1px solid var(--border);
       background: rgba(255,255,255,0.03);
       color: var(--text-muted);
+      /* v8: long chip text wraps within its pill instead of pushing layout wider */
+      max-width: 100%;
+      white-space: normal;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
     .info-chip.alert {
       color: var(--yellow);
@@ -908,17 +949,33 @@
       .bt-form-col, .bt-results-col { min-width: 0; flex: 1 1 auto; }
       .bt-form-col { flex-basis: auto; }
       .bt-row-3 { grid-template-columns: 1fr 1fr; }
-      .main { padding: 1.25rem 1rem 5rem; }
+      .main {
+        padding:
+          1.25rem
+          calc(1rem + env(safe-area-inset-right))
+          calc(5rem + env(safe-area-inset-bottom))
+          calc(1rem + env(safe-area-inset-left));
+      }
     }
 
     /* ── RESPONSIVE: PHONE (≤ 560px) ──────────────────────────────────── */
     @media (max-width: 560px) {
       /* General */
       body { font-size: 14px; }
-      .main { padding: 1rem 0.75rem 5rem; }
+      .main {
+        padding:
+          1rem
+          calc(0.75rem + env(safe-area-inset-right))
+          calc(5rem + env(safe-area-inset-bottom))
+          calc(0.75rem + env(safe-area-inset-left));
+      }
 
-      /* Header — tighter on phone */
-      .header { padding: 0 0.85rem; height: 48px; gap: 0.5rem; }
+      /* Header — tighter on phone, but respect notch/status bar */
+      .header {
+        padding: env(safe-area-inset-top) calc(0.85rem + env(safe-area-inset-right)) 0 calc(0.85rem + env(safe-area-inset-left));
+        height: calc(48px + env(safe-area-inset-top));
+        gap: 0.5rem;
+      }
       .logo-name { font-size: 0.85rem; }
       .nav-btn {
         padding: 5px 8px; font-size: 0.78rem;
@@ -1036,7 +1093,13 @@
 
     /* ── RESPONSIVE: SMALL PHONE (≤ 380px) — iPhone SE etc ─────────────── */
     @media (max-width: 380px) {
-      .main { padding: 0.85rem 0.6rem 5rem; }
+      .main {
+        padding:
+          0.85rem
+          calc(0.6rem + env(safe-area-inset-right))
+          calc(5rem + env(safe-area-inset-bottom))
+          calc(0.6rem + env(safe-area-inset-left));
+      }
       .game-header { padding: 0.75rem 0.7rem; }
       .game-title { font-size: 0.88rem !important; }
       .rec-block { margin: 0 0.7rem 0.6rem; padding: 0.6rem 0.7rem; }

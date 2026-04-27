@@ -1579,11 +1579,12 @@
       <div class="settings-section">
         <div class="settings-section-title">About</div>
         <div style="font-size:0.78rem;color:var(--text-muted);line-height:1.8">
-          <div>Model version: <span style="color:var(--text)">NHL v7 · NBA v5 · Totals v3 · Elo ensemble v2 · v8 calibration</span></div>
+          <div>Model version: <span style="color:var(--text)">NHL v7 + Monte Carlo · NBA v5 · Totals v3 · Elo ensemble v2 · v8 calibration · v9 simulation</span></div>
           <div style="margin-top:0.4rem"><strong style="color:var(--text)">NHL v7:</strong> Season GD · Consolidated recent form (L10 GD + win% + streak) · Venue win% (shrunk) · Pts% (shrunk) · B2B penalty · Rest diff · Line movement signal · Goalie (confirmed/projected) · H2H · PP/PK · Corsi/PDO · Faceoffs · Home ice · Injury</div>
           <div style="margin-top:0.4rem"><strong style="color:var(--text)">NBA v5:</strong> Pt diff (venue-blended) · Consolidated recent form (L10 win + L10 pt diff + streak) · Venue win% (shrunk) · eFG% · TS% · TOV% · ORB% · Defensive eFG allowed · 3pt regression · B2B penalty · Rest diff · H2H season · Line movement · Home court · Injury</div>
-          <div style="margin-top:0.4rem"><strong style="color:var(--text)">Elo ensemble (v2):</strong> Independent rating per team, auto-updates daily from completed games. Blended 60/40 with power-rating model. Confidence capped when models disagree.</div>
-          <div style="margin-top:0.4rem"><strong style="color:var(--text)">Totals (v3):</strong> Poisson distribution for NHL · Pace-adjusted normal distribution for NBA (matchup pace × scoring baselines). Returns true P(over/under) instead of just expected total.</div>
+          <div style="margin-top:0.4rem"><strong style="color:var(--text)">Three-way ensemble (v9):</strong> Power-rating (45%) + Elo (30%) + Monte Carlo simulation (25%). Monte Carlo runs 10,000 NHL game simulations using Poisson sampling with goalie/B2B/rest/injury-adjusted lambdas. Confidence capped when models disagree.</div>
+          <div style="margin-top:0.4rem"><strong style="color:var(--text)">Elo (v2):</strong> Independent rating per team, auto-updates daily from completed games.</div>
+          <div style="margin-top:0.4rem"><strong style="color:var(--text)">Totals (v3):</strong> Poisson distribution for NHL · Pace-adjusted normal distribution for NBA. Returns true P(over/under).</div>
           <div style="margin-top:0.5rem;color:var(--text-faint);font-size:0.72rem">Odds via The Odds API. Stats via NHL API + ESPN.</div>
         </div>
       </div>
@@ -2380,32 +2381,60 @@ function eloModelProb(homeTeam, awayTeam, ratings, sport = 'hockey') {
 // Disagreement detection: if models pick opposite teams, return a flag so
 // the UI can cap confidence — disagreements are a strong sign neither model
 // has the right read.
-function blendModelProb(powerResult, eloResult) {
-  if (!eloResult) return { ...powerResult, _eloMissing: true };
+function blendModelProb(powerResult, eloResult, mcResult = null) {
+  if (!eloResult && !mcResult) return { ...powerResult, _eloMissing: true };
 
-  const blended = powerResult.homeProb * 0.60 + eloResult.homeProb * 0.40;
-  // "Disagree" = models pick opposite teams. Both at exactly 0.500 is a tie,
-  // not a disagreement. Use a small tolerance band (0.49-0.51) as neutral.
-  const powerHomeFav = powerResult.homeProb > 0.51;
-  const powerAwayFav = powerResult.homeProb < 0.49;
-  const eloHomeFav   = eloResult.homeProb > 0.51;
-  const eloAwayFav   = eloResult.homeProb < 0.49;
-  const disagree     = (powerHomeFav && eloAwayFav) || (powerAwayFav && eloHomeFav);
+  // v9: three-model ensemble when Monte Carlo result is provided.
+  // Weights: 45% power-rating + 30% Elo + 25% Monte Carlo
+  // Without MC: 60% power + 40% Elo (legacy behavior preserved)
+  let blended;
+  let modelsArray;
+  if (mcResult) {
+    blended = powerResult.homeProb * 0.45 + eloResult.homeProb * 0.30 + mcResult.homeProb * 0.25;
+    modelsArray = [
+      { name: 'power', prob: powerResult.homeProb },
+      { name: 'elo',   prob: eloResult.homeProb },
+      { name: 'mc',    prob: mcResult.homeProb },
+    ];
+  } else {
+    blended = powerResult.homeProb * 0.60 + eloResult.homeProb * 0.40;
+    modelsArray = [
+      { name: 'power', prob: powerResult.homeProb },
+      { name: 'elo',   prob: eloResult.homeProb },
+    ];
+  }
 
-  // Magnitude of disagreement — gap between the two implied probs
-  const probGap = Math.abs(powerResult.homeProb - eloResult.homeProb);
+  // Disagreement detection across all available models with a 0.49-0.51 neutral band
+  const homeFavs = modelsArray.map(m => m.prob > 0.51);
+  const awayFavs = modelsArray.map(m => m.prob < 0.49);
+  // Disagree if at least one model picks home and at least one picks away
+  const disagree = homeFavs.some(x => x) && awayFavs.some(x => x);
 
-  return {
+  // Probability gap: max - min across models (replaces simple two-model gap)
+  const probs = modelsArray.map(m => m.prob);
+  const probGap = Math.max(...probs) - Math.min(...probs);
+
+  const out = {
     ...powerResult,
     homeProb: +Math.max(0.05, Math.min(0.95, blended)).toFixed(3),
     awayProb: +Math.max(0.05, Math.min(0.95, 1 - blended)).toFixed(3),
     _powerHomeProb: powerResult.homeProb,
-    _eloHomeProb:   eloResult.homeProb,
-    _eloHomeRating: eloResult.homeRating,
-    _eloAwayRating: eloResult.awayRating,
+    _eloHomeProb:   eloResult ? eloResult.homeProb : null,
+    _eloHomeRating: eloResult ? eloResult.homeRating : null,
+    _eloAwayRating: eloResult ? eloResult.awayRating : null,
     _modelsDisagree: disagree,
     _modelsProbGap:  +probGap.toFixed(3),
   };
+
+  // v9: include MC fields when available
+  if (mcResult) {
+    out._mcHomeProb     = mcResult.homeProb;
+    out._mcExpectedTotal = mcResult.expectedTotal;
+    out._mcLambdaHome   = mcResult.lambdaHome;
+    out._mcLambdaAway   = mcResult.lambdaAway;
+  }
+
+  return out;
 }
 
 // ── POISSON / NORMAL DISTRIBUTION HELPERS (v6 totals) ───────────────────────
@@ -2452,6 +2481,213 @@ function normalCDF(z) {
 // shrunk toward league mean with k=10 games of prior weight. Venue-specific
 // splits (homeGoalsForPG, roadGoalsAgainstPG, etc.) are blended with season
 // rates when available. Backup goalies add +0.4 to the opposing team's λ.
+// ── MONTE CARLO SIMULATION ENGINE (v9) ─────────────────────────────────────
+// Runs N full game simulations and aggregates the outcomes into win/total/
+// spread probabilities. Unlike the point-estimate model (which produces ONE
+// probability via a logistic function), simulation produces a full
+// distribution of possible outcomes.
+//
+// Why simulation matters:
+//   • Joint probabilities done right — moneyline, totals, and spread all
+//     come from the same underlying sample, so they're internally consistent.
+//   • Tail risk surfaces — "20% chance of fewer than 4 goals" is information
+//     a point estimate cannot give you.
+//   • Better calibration on close games — accounts properly for variance
+//     instead of compressing it through a sigmoid.
+//
+// Sampling approach: Knuth's algorithm for Poisson sampling. Fast for the
+// small λ values we deal with (goals per team typically 1.5-4.5).
+
+// Sample a single value from a Poisson distribution with rate λ.
+// Knuth's algorithm: iteratively multiply random uniforms until product
+// drops below e^(-λ). Returns the number of "events" (goals).
+function samplePoisson(lambda) {
+  if (lambda <= 0) return 0;
+  // For small λ this is fast (~λ multiplications on average)
+  const L = Math.exp(-lambda);
+  let k = 0;
+  let p = 1;
+  while (true) {
+    k++;
+    p *= Math.random();
+    if (p <= L) return k - 1;
+    // Safety break for pathological cases (shouldn't happen with λ < 30)
+    if (k > 100) return k - 1;
+  }
+}
+
+// Run N simulations of an NHL game given home/away expected goals (λ values),
+// plus optional adjustments for OT skill skew. Returns aggregated probabilities.
+//
+// homeOTEdge: small skew to OT/SO outcomes when teams are mismatched. Default
+// 0.5 means OT is a coin flip; values like 0.55 mean home wins OT 55% when
+// teams are otherwise equal. Calibrated from team rating gap.
+function simulateNHLGame(lambdaHome, lambdaAway, opts = {}) {
+  const { runs = 10000, otHomeEdge = 0.50, dispersion = 1.02 } = opts;
+
+  // Apply small dispersion factor to widen distribution slightly.
+  // Real NHL games have ~5% more variance than pure Poisson predicts due
+  // to score effects (empty net goals, score-state shooting changes).
+  // Implementation: occasionally add or subtract 1 from a sample to widen it.
+
+  let homeWins      = 0;
+  let totalGoalsSum = 0;
+  const totalsHist  = new Array(15).fill(0); // count games with each total
+  const marginHist  = new Array(15).fill(0); // home margin (-7 to +7)
+  const totalsArr   = new Array(runs);       // for percentile computation
+  const homeGoalsArr = new Array(runs);
+  const awayGoalsArr = new Array(runs);
+
+  for (let i = 0; i < runs; i++) {
+    let h = samplePoisson(lambdaHome);
+    let a = samplePoisson(lambdaAway);
+
+    // Apply dispersion: 5% chance to add ±1 to one side
+    if (Math.random() < (dispersion - 1)) {
+      if (Math.random() < 0.5) h = Math.max(0, h + (Math.random() < 0.5 ? 1 : -1));
+      else                    a = Math.max(0, a + (Math.random() < 0.5 ? 1 : -1));
+    }
+
+    // Handle ties: simulate OT/SO. ~50/50 with small skew toward better team.
+    if (h === a) {
+      // OT goal goes to one side
+      if (Math.random() < otHomeEdge) h++;
+      else                              a++;
+    }
+
+    if (h > a) homeWins++;
+
+    const total = h + a;
+    totalGoalsSum += total;
+    if (total < totalsHist.length) totalsHist[total]++;
+    totalsArr[i]    = total;
+    homeGoalsArr[i] = h;
+    awayGoalsArr[i] = a;
+
+    const margin = h - a;
+    const marginIdx = margin + 7; // shift so -7 maps to index 0
+    if (marginIdx >= 0 && marginIdx < marginHist.length) marginHist[marginIdx]++;
+  }
+
+  const homeWinProb = homeWins / runs;
+  const expectedTotal = totalGoalsSum / runs;
+
+  // Helper: P(total > line)
+  function probOver(line) {
+    const cutoff = Math.floor(line);
+    let count = 0;
+    for (let t = cutoff + 1; t < totalsHist.length; t++) count += totalsHist[t];
+    return count / runs;
+  }
+  function probUnder(line) { return 1 - probOver(line); }
+
+  // Spread: P(home wins by more than X)
+  function probHomeCovers(line) {
+    let count = 0;
+    const cutoff = line < 0 ? Math.ceil(-line) : -Math.floor(line);
+    for (let m = cutoff; m <= 7; m++) {
+      const idx = m + 7;
+      if (idx >= 0 && idx < marginHist.length) count += marginHist[idx];
+    }
+    return count / runs;
+  }
+
+  // Sort the actual totals array for percentiles (correct way)
+  totalsArr.sort((x, y) => x - y);
+  homeGoalsArr.sort((x, y) => x - y);
+  awayGoalsArr.sort((x, y) => x - y);
+
+  return {
+    runs,
+    homeWinProb: +homeWinProb.toFixed(4),
+    awayWinProb: +(1 - homeWinProb).toFixed(4),
+    expectedTotal: +expectedTotal.toFixed(2),
+    totalP05: totalsArr[Math.floor(runs * 0.05)],
+    totalP50: totalsArr[Math.floor(runs * 0.50)],
+    totalP95: totalsArr[Math.floor(runs * 0.95)],
+    probOver,
+    probUnder,
+    probHomeCovers,
+    lambdaHome,
+    lambdaAway,
+    // Most likely score (median home and away)
+    mostLikelyHome: homeGoalsArr[Math.floor(runs / 2)],
+    mostLikelyAway: awayGoalsArr[Math.floor(runs / 2)],
+  };
+}
+
+// Build the simulation lambdas from the same data the power-rating model uses.
+// Takes the existing nhlPoissonTotals output and applies further adjustments
+// for goalie quality, B2B, rest, line movement, etc.
+//
+// The key insight: rating-space adjustments need to translate into goal-rate
+// adjustments. Calibration: a +0.04 rating bump ≈ +5% win prob ≈ +0.15 goals
+// in expected scoring. So scaleFactor = 0.15 / 0.04 = ~3.75.
+function buildSimulationLambdas(homeStats, awayStats, ctx = {}) {
+  const {
+    homeBackupGoalie = false,
+    awayBackupGoalie = false,
+    homeGoalieRating = 0.5,    // 0–1 scale; 0.5 = league avg
+    awayGoalieRating = 0.5,
+    homeB2B = false,
+    awayB2B = false,
+    homeRestDays = null,
+    awayRestDays = null,
+    homeInjuryPen = 0,
+    awayInjuryPen = 0,
+    lineMovement = null,
+  } = ctx;
+
+  // Start with the existing Poisson totals lambdas — they handle the
+  // offense/defense math already.
+  const base = nhlPoissonTotals(homeStats, awayStats, {
+    homeBackupGoalie, awayBackupGoalie,
+  });
+
+  let lambdaHome = base.lambdaHome;
+  let lambdaAway = base.lambdaAway;
+
+  // Goalie quality adjustment: better goalie suppresses opp's λ.
+  // Goalie rating is on 0–1 scale, 0.5 = avg. Each 0.1 above avg ≈ -0.15 goals.
+  const homeGoalieAdj = (homeGoalieRating - 0.5) * 1.5;
+  const awayGoalieAdj = (awayGoalieRating - 0.5) * 1.5;
+  lambdaAway = Math.max(0.5, lambdaAway - homeGoalieAdj);
+  lambdaHome = Math.max(0.5, lambdaHome - awayGoalieAdj);
+
+  // B2B fatigue: tired team scores ~0.15 fewer goals
+  if (homeB2B) lambdaHome = Math.max(0.5, lambdaHome - 0.15);
+  if (awayB2B) lambdaAway = Math.max(0.5, lambdaAway - 0.15);
+
+  // Rest differential: ±0.08 goals per day of rest advantage, capped at 3 days
+  if (typeof homeRestDays === 'number' && typeof awayRestDays === 'number') {
+    const restDiff = Math.max(-3, Math.min(3, homeRestDays - awayRestDays));
+    lambdaHome += restDiff * 0.04;
+    lambdaAway -= restDiff * 0.04;
+    lambdaHome = Math.max(0.5, lambdaHome);
+    lambdaAway = Math.max(0.5, lambdaAway);
+  }
+
+  // Line movement: same tiered approach as power model.
+  // Sharp money signal → translate ratingAdj × 3.75 to get goalAdj.
+  if (lineMovement && lineMovement.tier !== 'noise') {
+    const homeAdj = (lineMovement.homeRatingAdj || 0) * 3.75;
+    const awayAdj = (lineMovement.awayRatingAdj || 0) * 3.75;
+    lambdaHome = Math.max(0.5, lambdaHome + homeAdj);
+    lambdaAway = Math.max(0.5, lambdaAway + awayAdj);
+  }
+
+  // Injuries: penalty in rating space → goal-rate space
+  lambdaHome = Math.max(0.5, lambdaHome - homeInjuryPen * 3.75);
+  lambdaAway = Math.max(0.5, lambdaAway - awayInjuryPen * 3.75);
+
+  // Compute OT edge from team rating gap (tighter teams → more 50/50 OT)
+  const lambdaGap = lambdaHome - lambdaAway;
+  // Each 0.5 lambda advantage ≈ +5% OT win edge, capped ±10%
+  const otHomeEdge = Math.max(0.40, Math.min(0.60, 0.50 + lambdaGap * 0.10));
+
+  return { lambdaHome, lambdaAway, otHomeEdge };
+}
+
 function nhlPoissonTotals(homeStats, awayStats, opts = {}) {
   const {
     homeBackupGoalie = false,
@@ -3071,7 +3307,10 @@ function buildRecBlock(game, modelEdge) {
   if (modelEdge && modelEdge._modelsDisagree) {
     const phPct = Math.round((modelEdge._powerHomeProb ?? 0.5) * 100);
     const ehPct = Math.round((modelEdge._eloHomeProb ?? 0.5) * 100);
-    chips.push(`<span class="info-chip alert" title="Power-rating model: ${phPct}% home. Elo: ${ehPct}% home. Disagreement = no clear edge.">⚠ Models disagree</span>`);
+    const mcStr = modelEdge._mcHomeProb != null
+      ? ` Sim: ${Math.round(modelEdge._mcHomeProb * 100)}% home.`
+      : '';
+    chips.push(`<span class="info-chip alert" title="Power-rating: ${phPct}% home. Elo: ${ehPct}% home.${mcStr} Disagreement = no clear edge.">⚠ Models disagree</span>`);
   }
   const chipBar = chips.length ? `<div class="info-strip">${chips.join('')}</div>` : '';
 
@@ -3122,7 +3361,7 @@ function buildRecBlock(game, modelEdge) {
       reason += ` Goalie not yet known — confidence reduced.`;
     }
 
-    // v7: ensemble model breakdown line — shown when both models loaded
+    // v9: ensemble model breakdown — now shows up to 3 models (power + Elo + MC)
     let ensembleHTML = '';
     if (modelEdge._powerHomeProb != null && modelEdge._eloHomeProb != null) {
       const phPct  = Math.round(modelEdge._powerHomeProb * 100);
@@ -3135,9 +3374,19 @@ function buildRecBlock(game, modelEdge) {
         : modelEdge._modelsProbGap > 0.10
           ? '<strong style="color:var(--text)">agree (large gap)</strong>'
           : '<strong style="color:var(--green)">agree</strong>';
+
+      // v9: Monte Carlo display, only when MC ran (NHL)
+      let mcSpan = '';
+      if (modelEdge._mcHomeProb != null) {
+        const mcPct = Math.round(modelEdge._mcHomeProb * 100);
+        const mcTotal = modelEdge._mcExpectedTotal;
+        mcSpan = `<span><strong style="color:var(--text)">Sim:</strong> ${mcPct}% home <span style="opacity:0.6;font-family:monospace">(exp ${mcTotal} goals)</span></span>`;
+      }
+
       ensembleHTML = `<div style="margin-top:0.45rem;padding:0.4rem 0.55rem;background:rgba(255,255,255,0.025);border-radius:6px;font-size:0.7rem;color:${cls};display:flex;flex-wrap:wrap;gap:0.6rem;align-items:center">
-        <span><strong style="color:var(--text)">Power model:</strong> ${phPct}% home</span>
+        <span><strong style="color:var(--text)">Power:</strong> ${phPct}% home</span>
         <span><strong style="color:var(--text)">Elo:</strong> ${ehPct}% home <span style="opacity:0.6;font-family:monospace">(${eRatStr})</span></span>
+        ${mcSpan}
         <span style="margin-left:auto">${verdict}</span>
       </div>`;
     }
@@ -4590,7 +4839,31 @@ function buildStatsPanel(game, nhlStats, players = null, injuries = null, series
   // v7: Elo ensemble — blend with power-rating model
   const eloRatings   = getEloRatings('hockey', nhlStats);
   const eloResult    = eloModelProb(game.homeTeam, game.awayTeam, eloRatings, 'hockey');
-  const blended      = blendModelProb({ homeProb: powerHomeProb, awayProb: powerAwayProb }, eloResult);
+
+  // v9: Monte Carlo simulation — third ensemble input.
+  // Builds proper game-state-aware lambdas, runs 10,000 sims, produces
+  // joint probabilities for moneyline, totals, and spread simultaneously.
+  const mcLambdas = buildSimulationLambdas(homeStats, awayStats, {
+    homeBackupGoalie,
+    awayBackupGoalie,
+    homeGoalieRating,
+    awayGoalieRating,
+    homeB2B: scheduleCtx.homeB2B,
+    awayB2B: scheduleCtx.awayB2B,
+    homeRestDays: scheduleCtx.homeRestDays,
+    awayRestDays: scheduleCtx.awayRestDays,
+    homeInjuryPen,
+    awayInjuryPen,
+    lineMovement,
+  });
+  const mcResult = simulateNHLGame(mcLambdas.lambdaHome, mcLambdas.lambdaAway, {
+    runs: 10000,
+    otHomeEdge: mcLambdas.otHomeEdge,
+  });
+  // Cache MC result on the game so other UI bits can show its outputs
+  game._mcResult = mcResult;
+
+  const blended      = blendModelProb({ homeProb: powerHomeProb, awayProb: powerAwayProb }, eloResult, mcResult);
   const homeProb     = blended.homeProb;
   const awayProb     = blended.awayProb;
   const _modelsDisagree = blended._modelsDisagree;
@@ -4599,6 +4872,8 @@ function buildStatsPanel(game, nhlStats, players = null, injuries = null, series
   const _eloHomeProb    = blended._eloHomeProb;
   const _eloHomeRating  = blended._eloHomeRating;
   const _eloAwayRating  = blended._eloAwayRating;
+  const _mcHomeProb     = blended._mcHomeProb;
+  const _mcExpectedTotal = blended._mcExpectedTotal;
   const homePct = Math.round(homeProb * 100);
   const awayPct = Math.round(awayProb * 100);
   const ratingGap = Math.abs(homeRating - awayRating);
@@ -4672,7 +4947,7 @@ function buildStatsPanel(game, nhlStats, players = null, injuries = null, series
       cappedConfidence = Math.min(cappedConfidence, 72);
     }
 
-    modelEdge = { team: edgeSide, edge: edgePct, confidence: cappedConfidence, evAndModelAgree, ratingGap, streakAligned, _homeProb: homeProb, _awayProb: awayProb, _statsOnlyConf, _goalieStatus: goalieStatus, _lineMovement: lineMovement, _modelsDisagree, _modelsProbGap, _powerHomeProb, _eloHomeProb, _eloHomeRating, _eloAwayRating };
+    modelEdge = { team: edgeSide, edge: edgePct, confidence: cappedConfidence, evAndModelAgree, ratingGap, streakAligned, _homeProb: homeProb, _awayProb: awayProb, _statsOnlyConf, _goalieStatus: goalieStatus, _lineMovement: lineMovement, _modelsDisagree, _modelsProbGap, _powerHomeProb, _eloHomeProb, _eloHomeRating, _eloAwayRating, _mcHomeProb, _mcExpectedTotal };
   } else {
     // No odds available — still store the model's lean so the card can display it
     const _statsOnlyConf = Math.min(62, 45 + Math.round(Math.min(18, Math.max(0, ratingGap * 130))));
@@ -4685,6 +4960,7 @@ function buildStatsPanel(game, nhlStats, players = null, injuries = null, series
       _leanOnly: true, _statsOnlyConf,
       _goalieStatus: goalieStatus, _lineMovement: lineMovement,
       _modelsDisagree, _modelsProbGap, _powerHomeProb, _eloHomeProb, _eloHomeRating, _eloAwayRating,
+      _mcHomeProb, _mcExpectedTotal,
     };
   }
 

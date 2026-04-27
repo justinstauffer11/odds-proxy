@@ -8693,11 +8693,24 @@ async function runRollingBacktest(opts = {}) {
   let games = [];
   try {
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`Proxy returned ${res.status}`);
+    if (!res.ok) {
+      // Try to read the error body for a clearer message
+      let bodyMsg = `${res.status} ${res.statusText}`;
+      try {
+        const errBody = await res.json();
+        if (errBody?.error) bodyMsg = errBody.error;
+      } catch (_) {}
+      throw new Error(bodyMsg);
+    }
     const data = await res.json();
     games = data.games || [];
   } catch (e) {
-    return { error: `Failed to fetch historical games: ${e.message}` };
+    // "Failed to fetch" usually = proxy not deployed yet, or CORS, or network issue
+    let msg = e.message || 'Unknown fetch error';
+    if (/failed to fetch/i.test(msg)) {
+      msg = `Proxy not reachable. Verify nhl-historical-games.js is deployed in your /api/ folder. Tried: ${url}`;
+    }
+    return { error: msg };
   }
 
   if (games.length === 0) {

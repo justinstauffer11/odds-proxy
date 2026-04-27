@@ -9,7 +9,7 @@
 // Bump CACHE_VERSION whenever you ship a meaningful HTML or asset change so
 // users get the new version after closing/reopening the app once.
 
-const CACHE_VERSION = ‘edge-v11’;
+const CACHE_VERSION = ‘edge-v12’;
 
 const SHELL_ASSETS = [
 ‘/’,
